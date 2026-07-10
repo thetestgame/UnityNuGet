@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -165,13 +166,7 @@ namespace UnityNuGet.Tests
 
             Registry registry = new(loggerFactory, Options.Create(s_registryOptions));
 
-            NuGetConsoleTestLogger logger = new();
-
             await registry.StartAsync(CancellationToken.None);
-
-            SourceCacheContext cache = new();
-            SourceRepository repository = Repository.Factory.GetCoreV3("https://api.nuget.org/v3/index.json");
-            PackageMetadataResource resource = await repository.GetResourceAsync<PackageMetadataResource>();
 
             RegistryTargetFramework[] nuGetFrameworks = [new() { Framework = CommonFrameworks.NetStandard20 }];
 
@@ -240,13 +235,42 @@ namespace UnityNuGet.Tests
 
             Regex excludedPackagesRegex = new(@$"^{string.Join('|', excludedPackages)}$");
 
-            return [.. registry.Where(r => !r.Value.Analyzer && !r.Value.Ignored).OrderBy((pair) => pair.Key).Select((pair) =>
+            int shardCount = 1;
+            int shardIndex = 0;
+
+            string? shardCountEnv = Environment.GetEnvironmentVariable("UNITYNUGET_REGISTRY_SHARD_COUNT");
+            string? shardIndexEnv = Environment.GetEnvironmentVariable("UNITYNUGET_REGISTRY_SHARD_INDEX");
+
+            if (!string.IsNullOrWhiteSpace(shardCountEnv) && int.TryParse(shardCountEnv, out int parsedShardCount) && parsedShardCount > 0)
             {
+                shardCount = parsedShardCount;
+            }
+
+            if (!string.IsNullOrWhiteSpace(shardIndexEnv) && int.TryParse(shardIndexEnv, out int parsedShardIndex) && parsedShardIndex >= 0)
+            {
+                shardIndex = parsedShardIndex;
+            }
+
+            if (shardIndex >= shardCount)
+            {
+                throw new InvalidOperationException($"Invalid shard configuration: index {shardIndex} must be less than shard count {shardCount}.");
+            }
+
+            var entries = registry
+                .Where(r => !r.Value.Analyzer && !r.Value.Ignored)
+                .OrderBy((pair) => pair.Key)
+                .Select((pair, index) => (pair, index));
+
+            if (shardCount > 1)
+            {
+                entries = entries.Where(e => e.index % shardCount == shardIndex);
+            }
+
+            return [.. entries.Select((entry) =>
+            {
+                KeyValuePair<string, RegistryEntry> pair = entry.pair;
+
                 return new TestCaseData(
-                    resource,
-                    logger,
-                    cache,
-                    repository,
                     excludedPackagesRegex,
                     nuGetFrameworks,
                     pair.Key,
@@ -258,18 +282,20 @@ namespace UnityNuGet.Tests
 
         const int MaxAllowedVersions = 100;
 
+        [Parallelizable(ParallelScope.All)]
         [TestCaseSource(nameof(AllRegistries))]
-        public async Task Ensure_Min_Version_Is_Correct_Ignoring_Analyzers_And_Native_Libs(PackageMetadataResource resource,
-            NuGetConsoleTestLogger logger,
-            SourceCacheContext cache,
-            SourceRepository repository,
-            Regex excludedPackagesRegex,
+        public async Task Ensure_Min_Version_Is_Correct_Ignoring_Analyzers_And_Native_Libs(Regex excludedPackagesRegex,
             RegistryTargetFramework[] nuGetFrameworks,
             string packageId,
             bool includePrerelease,
             bool includeUnlisted,
             VersionRange versionRange)
         {
+            NuGetConsoleTestLogger logger = new();
+            SourceCacheContext cache = new();
+            SourceRepository repository = Repository.Factory.GetCoreV3("https://api.nuget.org/v3/index.json");
+            PackageMetadataResource resource = await repository.GetResourceAsync<PackageMetadataResource>();
+
             IEnumerable<IPackageSearchMetadata> dependencyPackageMetas = await resource.GetMetadataAsync(
                 packageId,
                 includePrerelease,
