@@ -1,5 +1,5 @@
 ---
-name: ci
+name: CI
 
 on:
   push:
@@ -18,8 +18,39 @@ on:
       - readme.md
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
+    name: Unit Tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install .NET Core
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: |
+            src/Directory.Packages.props
+            src/**/packages.lock.json
+
+      - name: Test UnityNuGet.Server.Tests (Release)
+        run: dotnet test src/UnityNuGet.Server.Tests/UnityNuGet.Server.Tests.csproj -c Release --logger "console;verbosity=normal"
+
+      - name: Test UnityNuGet.Tests excluding long registry validation (Release)
+        run: >
+          dotnet test src/UnityNuGet.Tests/UnityNuGet.Tests.csproj
+          -c Release
+          --filter "TestCategory!=RegistryValidation"
+          --logger "console;verbosity=normal"
+
+  registry-validation:
+    runs-on: ubuntu-latest
+    name: Registry Validation (${{ matrix.shard-index }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard-index: [0, 1, 2, 3, 4, 5]
 
     steps:
       - name: Checkout
@@ -29,6 +60,18 @@ jobs:
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: |
+            src/Directory.Packages.props
+            src/**/packages.lock.json
 
-      - name: Build & test (Release)
-        run: dotnet test src -c Release --logger "console;verbosity=normal"
+      - name: Run registry validation shard
+        env:
+          UNITYNUGET_REGISTRY_SHARD_COUNT: 6
+          UNITYNUGET_REGISTRY_SHARD_INDEX: ${{ matrix.shard-index }}
+        run: >
+          dotnet test src/UnityNuGet.Tests/UnityNuGet.Tests.csproj
+          -c Release
+          --filter "TestCategory=RegistryValidation"
+          -- NUnit.NumberOfTestWorkers=8
+          --logger "console;verbosity=normal"

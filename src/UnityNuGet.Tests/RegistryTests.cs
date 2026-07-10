@@ -283,6 +283,7 @@ namespace UnityNuGet.Tests
         const int MaxAllowedVersions = 100;
 
         [Parallelizable(ParallelScope.All)]
+        [Category("RegistryValidation")]
         [TestCaseSource(nameof(AllRegistries))]
         public async Task Ensure_Min_Version_Is_Correct_Ignoring_Analyzers_And_Native_Libs(Regex excludedPackagesRegex,
             RegistryTargetFramework[] nuGetFrameworks,
